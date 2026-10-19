@@ -10,3 +10,7 @@ Python – liability engine: Generate a synthetic pension portfolio (ages, accru
 Excel – the reviewable model: Build a clean deterministic version for a subset of the portfolio. Include named ranges, an assumptions sheet, a sensitivity table (interest ±1%, longevity shock), and a small dashboard. Reconcile it with Python. That reconciliation step is exactly what actuarial trainees do.
 
 Report: A 4–6 page report covering method, results, limitations, and what I'd do next.
+
+Order of project:
+1. Data-cleaning-MHD.Rmd <- loads HMD data, filters on age 30-100, year 1990-2023 and fits Lee-Carter and Renshaw-Haberman. Returns forecasts and central rates.
+2. activate venv.
