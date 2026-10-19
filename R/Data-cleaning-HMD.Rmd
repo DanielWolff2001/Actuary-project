@@ -1,0 +1,317 @@
+---
+title: "Data cleaning HMD"
+author: "Daniel Wolff"
+date: "2026-10-19"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+Load in necessary libraries and dataset
+```{r libraries}
+library(tidyverse)
+library(StMoMo)
+library(demography)
+library(arrow)
+```
+
+```{r dataset}
+deaths <- read.table("/Users/danielwolff/Actuary-project/data/Deaths_1x1.txt", skip = 2, header = TRUE, na.strings = ".")
+expo   <- read.table("/Users/danielwolff/Actuary-project/data/Exposures_1x1.txt", skip = 2, header = TRUE, na.strings = ".")
+```
+
+Only look at age 30-100 and year 1990-2023
+```{r age and year filtering}
+deaths$Age <- as.numeric(sub("\\+", "", deaths$Age))
+deaths <- deaths[deaths$Year >= 1990 & deaths$Age >= 30 & deaths$Age <= 100, ]
+expo$Age <- as.numeric(sub("\\+", "", expo$Age))
+expo <- expo[expo$Year >= 1990 & expo$Age >= 30 & expo$Age <= 100, ]
+```
+
+Create death rates and plot for male and female separately
+```{r}
+# Long format: one row per Year, Age, Sex
+deaths_long <- deaths %>%
+  select(Year, Age, Female, Male) %>%
+  pivot_longer(c(Female, Male), names_to = "Sex", values_to = "Deaths")
+
+expo_long <- expo %>%
+  select(Year, Age, Female, Male) %>%
+  pivot_longer(c(Female, Male), names_to = "Sex", values_to = "Exposure")
+
+# Join and compute death rates
+rates <- deaths_long %>%
+  left_join(expo_long, by = c("Year", "Age", "Sex")) %>%
+  mutate(m = Deaths / Exposure,
+         log_m = log(m))
+
+# Plot log death rate over time for selected ages, one panel per sex
+rates %>%
+  filter(Age %in% c(30, 50, 65, 80, 95)) %>%
+  ggplot(aes(x = Year, y = log_m, colour = factor(Age))) +
+  geom_line() +
+  facet_wrap(~ Sex) +
+  labs(x = "Year", y = "log death rate", colour = "Age",
+       title = "Log death rates in the Netherlands, 1990-2023") +
+  theme_minimal()
+```
+## MALES
+
+Fit Lee-carter model
+```{r turn data into matrices}
+# Turn long data into age x year matrices for one sex
+make_matrix <- function(df, sex, var) {
+  df %>%
+    filter(Sex == sex) %>%
+    select(Age, Year, all_of(var)) %>%
+    pivot_wider(names_from = Year, values_from = all_of(var)) %>%
+    arrange(Age) %>%
+    select(-Age) %>%
+    as.matrix()
+}
+
+ages  <- sort(unique(rates$Age))
+years <- sort(unique(rates$Year))
+
+Dxt_m <- make_matrix(rates, "Male", "Deaths")
+Ext_m <- make_matrix(rates, "Male", "Exposure")
+dimnames(Dxt_m) <- dimnames(Ext_m) <- list(ages, years)
+
+Dxt_f <- make_matrix(rates, "Female", "Deaths")
+Ext_f <- make_matrix(rates, "Female", "Exposure")
+dimnames(Dxt_f) <- dimnames(Ext_f) <- list(ages, years)
+
+```
+
+```{r fit lee-carter model to male data}
+# Lee-Carter with Poisson errors and log link (central exposures)
+LC <- lc(link = "log")
+
+LCfit_m <- fit(LC, Dxt = Dxt_m, Ext = Ext_m, ages = ages, years = years)
+
+# Quick checks
+plot(LCfit_m)                        # a_x, b_x, k_t
+res_m <- residuals(LCfit_m)
+plot(res_m, type = "colourmap")      # residual heatmap
+```
+
+try to get rid of the clear bands of the cohorts by using Renshaw-Haberman
+```{r}
+# Give zero weight to cohorts with fewer than 3 observations (corners of the data)
+wxt <- genWeightMat(ages = ages, years = years, clip = 3)
+
+# Refit LC with the same weights so the comparison is fair
+LCfit_m <- fit(LC, Dxt = Dxt_m, Ext = Ext_m, ages = ages, years = years, wxt = wxt)
+
+# Renshaw-Haberman: log m = a_x + b_x k_t + g_(t-x)
+RH <- rh(link = "log", cohortAgeFun = "1")
+RHfit_m <- fit(RH, Dxt = Dxt_m, Ext = Ext_m, ages = ages, years = years, wxt = wxt,
+               start.ax = LCfit_m$ax, start.bx = LCfit_m$bx, start.kt = LCfit_m$kt, itermax = 10000)
+
+plot(RHfit_m, parametricbx = FALSE)   # check that the cohort effect g_c looks sensible
+
+# Residuals side by side, same colour scale
+par(mfrow = c(1, 2))
+plot(residuals(LCfit_m), type = "colourmap", reslim = c(-3.5, 3.5), main = "Lee-Carter")
+plot(residuals(RHfit_m), type = "colourmap", reslim = c(-3.5, 3.5), main = "Renshaw-Haberman")
+par(mfrow = c(1, 1))
+
+# Information criteria (lower is better)
+data.frame(model = c("LC", "RH"),
+           loglik = c(LCfit_m$loglik, RHfit_m$loglik),
+           npar = c(LCfit_m$npar, RHfit_m$npar),
+           AIC = c(AIC(LCfit_m), AIC(RHfit_m)),
+           BIC = c(BIC(LCfit_m), BIC(RHfit_m)))
+```
+
+next step is to forecast now that the bands are gone. Check whether LC or RH gives more meaningful results in forecasting.
+```{r}
+h <- 50          # forecast horizon in years
+nsim <- 1000     # number of simulated scenarios
+
+# Central forecasts (random walk with drift for k_t, ARIMA(1,1,0) for the cohort effect)
+LCfor_m <- forecast(LCfit_m, h = h)
+RHfor_m <- forecast(RHfit_m, h = h, gc.order = c(1, 1, 0))
+
+plot(LCfor_m, only.kt = TRUE)
+plot(RHfor_m)                    # k_t and gamma forecasts
+
+# Stochastic scenarios
+set.seed(1)
+LCsim_m <- simulate(LCfit_m, nsim = nsim, h = h)
+RHsim_m <- simulate(RHfit_m, nsim = nsim, h = h, gc.order = c(1, 1, 0))
+
+# Period life expectancy at 65 from a vector of death rates named by age
+e_x <- function(m, from_age = 65) {
+  m <- m[as.numeric(names(m)) >= from_age]
+  sum(cumprod(exp(-m))) + 0.5
+}
+
+# Central forecast: e65 per year
+e65_LC <- apply(LCfor_m$rates, 2, e_x)
+e65_RH <- apply(RHfor_m$rates, 2, e_x)
+
+# Simulations: e65 per year per scenario, then 2.5% / 50% / 97.5% quantiles
+e65_LC_sim <- apply(LCsim_m$rates, c(2, 3), e_x)
+e65_RH_sim <- apply(RHsim_m$rates, c(2, 3), e_x)
+q_LC <- apply(e65_LC_sim, 1, quantile, c(0.025, 0.5, 0.975))
+q_RH <- apply(e65_RH_sim, 1, quantile, c(0.025, 0.5, 0.975))
+
+# Plot both models with 95% bands
+yrs <- as.numeric(colnames(q_LC))
+plot(yrs, q_LC[2, ], type = "l", col = "blue",
+     ylim = range(q_LC, q_RH), xlab = "Year", ylab = "Period e65",
+     main = "Projected life expectancy at 65 (men)")
+lines(yrs, q_LC[1, ], lty = 2, col = "blue"); lines(yrs, q_LC[3, ], lty = 2, col = "blue")
+lines(yrs, q_RH[2, ], col = "red")
+lines(yrs, q_RH[1, ], lty = 2, col = "red"); lines(yrs, q_RH[3, ], lty = 2, col = "red")
+legend("topleft", c("LC", "RH"), col = c("blue", "red"), lty = 1)
+
+# Comparison in 2050
+rbind(LC = q_LC[, "2050"], RH = q_RH[, "2050"])
+```
+
+RH fits better (AIC/BIC, residuals), but its forecasts are unstable because of the trade-off between period and cohort trends.
+LC is therefore chosen for projection, with its known weakness (no cohort effect) mentioned.
+
+## FEMALES
+
+Fit Lee-carter model
+
+```{r fit lee-carter model to female data}
+# Lee-Carter with Poisson errors and log link (central exposures)
+LC <- lc(link = "log")
+
+LCfit_f <- fit(LC, Dxt = Dxt_f, Ext = Ext_f, ages = ages, years = years)
+
+# Quick checks
+plot(LCfit_f)                        # a_x, b_x, k_t
+res_f <- residuals(LCfit_f)
+plot(res_f, type = "colourmap")      # residual heatmap
+```
+
+
+
+try to get rid of the clear bands of the cohorts by using Renshaw-Haberman
+```{r}
+# Give zero weight to cohorts with fewer than 3 observations (corners of the data)
+wxt <- genWeightMat(ages = ages, years = years, clip = 3)
+
+# Refit LC with the same weights so the comparison is fair
+LCfit_f <- fit(LC, Dxt = Dxt_f, Ext = Ext_f, ages = ages, years = years, wxt = wxt)
+
+# Renshaw-Haberman: log m = a_x + b_x k_t + g_(t-x)
+RH <- rh(link = "log", cohortAgeFun = "1")
+RHfit_f <- fit(RH, Dxt = Dxt_f, Ext = Ext_f, ages = ages, years = years, wxt = wxt,
+               start.ax = LCfit_f$ax, start.bx = LCfit_f$bx, start.kt = LCfit_f$kt, itermax = 10000)
+
+plot(RHfit_f, parametricbx = FALSE)   # check that the cohort effect g_c looks sensible
+
+# Residuals side by side, same colour scale
+par(mfrow = c(1, 2))
+plot(residuals(LCfit_f), type = "colourmap", reslim = c(-3.5, 3.5), main = "Lee-Carter")
+plot(residuals(RHfit_f), type = "colourmap", reslim = c(-3.5, 3.5), main = "Renshaw-Haberman")
+par(mfrow = c(1, 1))
+
+# Information criteria (lower is better)
+data.frame(model = c("LC", "RH"),
+           loglik = c(LCfit_f$loglik, RHfit_f$loglik),
+           npar = c(LCfit_f$npar, RHfit_f$npar),
+           AIC = c(AIC(LCfit_f), AIC(RHfit_f)),
+           BIC = c(BIC(LCfit_f), BIC(RHfit_f)))
+```
+
+next step is to forecast now that the bands are gone. Check whether LC or RH gives more meaningful results in forecasting.
+```{r}
+h <- 50          # forecast horizon in years
+nsim <- 1000     # number of simulated scenarios
+
+# Central forecasts (random walk with drift for k_t, ARIMA(1,1,0) for the cohort effect)
+LCfor_f <- forecast(LCfit_f, h = h)
+RHfor_f <- forecast(RHfit_f, h = h, gc.order = c(1, 1, 0))
+
+plot(LCfor_f, only.kt = TRUE)
+plot(RHfor_f)                    # k_t and gamma forecasts
+
+# Stochastic scenarios
+set.seed(1)
+LCsim_f <- simulate(LCfit_f, nsim = nsim, h = h)
+RHsim_f <- simulate(RHfit_f, nsim = nsim, h = h, gc.order = c(1, 1, 0))
+
+# Period life expectancy at 65 from a vector of death rates named by age
+e_x <- function(m, from_age = 65) {
+  m <- m[as.numeric(names(m)) >= from_age]
+  sum(cumprod(exp(-m))) + 0.5
+}
+
+# Central forecast: e65 per year
+e65_LC <- apply(LCfor_f$rates, 2, e_x)
+e65_RH <- apply(RHfor_f$rates, 2, e_x)
+
+# Simulations: e65 per year per scenario, then 2.5% / 50% / 97.5% quantiles
+e65_LC_sim <- apply(LCsim_f$rates, c(2, 3), e_x)
+e65_RH_sim <- apply(RHsim_f$rates, c(2, 3), e_x)
+q_LC <- apply(e65_LC_sim, 1, quantile, c(0.025, 0.5, 0.975))
+q_RH <- apply(e65_RH_sim, 1, quantile, c(0.025, 0.5, 0.975))
+
+# Plot both models with 95% bands
+yrs <- as.numeric(colnames(q_LC))
+plot(yrs, q_LC[2, ], type = "l", col = "blue",
+     ylim = range(q_LC, q_RH), xlab = "Year", ylab = "Period e65",
+     main = "Projected life expectancy at 65 (men)")
+lines(yrs, q_LC[1, ], lty = 2, col = "blue"); lines(yrs, q_LC[3, ], lty = 2, col = "blue")
+lines(yrs, q_RH[2, ], col = "red")
+lines(yrs, q_RH[1, ], lty = 2, col = "red"); lines(yrs, q_RH[3, ], lty = 2, col = "red")
+legend("topleft", c("LC", "RH"), col = c("blue", "red"), lty = 1)
+
+# Comparison in 2050
+rbind(LC = q_LC[, "2050"], RH = q_RH[, "2050"])
+```
+
+## Export to python
+
+Export projected rates to python, create data files
+
+```{r export male}
+# Central forecast
+central_m <- as.data.frame(as.table(LCfor_m$rates)) %>%
+  setNames(c("Age", "Year", "m")) %>%
+  mutate(Age = as.numeric(as.character(Age)),
+         Year = as.numeric(as.character(Year)),
+         Sex = "Male")
+
+write.csv(central_m, "/Users/danielwolff/Actuary-project/data/central_rates_male.csv", row.names = FALSE)
+
+# Simulated scenarios
+sims_m <- as.data.frame(as.table(LCsim_m$rates)) %>%
+  setNames(c("Age", "Year", "Sim", "m")) %>%
+  mutate(Age = as.numeric(as.character(Age)),
+         Year = as.numeric(as.character(Year)),
+         Sim = as.integer(Sim),
+         Sex = "Male")
+
+write_parquet(sims_m, "/Users/danielwolff/Actuary-project/data/sim_rates_male.parquet")
+```
+
+```{r export female}
+# Central forecast
+central_f <- as.data.frame(as.table(LCfor_f$rates)) %>%
+  setNames(c("Age", "Year", "m")) %>%
+  mutate(Age = as.numeric(as.character(Age)),
+         Year = as.numeric(as.character(Year)),
+         Sex = "Female")
+
+write.csv(central_f, "/Users/danielwolff/Actuary-project/data/central_rates_female.csv", row.names = FALSE)
+
+# Simulated scenarios
+sims_f <- as.data.frame(as.table(LCsim_f$rates)) %>%
+  setNames(c("Age", "Year", "Sim", "m")) %>%
+  mutate(Age = as.numeric(as.character(Age)),
+         Year = as.numeric(as.character(Year)),
+         Sim = as.integer(Sim),
+         Sex = "Female")
+
+write_parquet(sims_f, "/Users/danielwolff/Actuary-project/data/sim_rates_female.parquet")
+```
