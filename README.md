@@ -13,4 +13,6 @@ Report: A 4–6 page report covering method, results, limitations, and what I'd 
 
 Order of project:
 1. Data-cleaning-MHD.Rmd <- loads HMD data, filters on age 30-100, year 1990-2023 and fits Lee-Carter and Renshaw-Haberman. Returns forecasts and central rates.
-2. activate venv.
+2. activate venv. and download EIOPA files
+3. liability_model.py <- generates Portfolio and calculates fund needed, taking into account shocks. Uses Stochastic BEL and discount rates from EIOPA. Returns minimum fund and small xlsx file to test in Excel.
+4. Duplicate the excel file for analysis -> python_export_workbook.xlsx
