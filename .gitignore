@@ -3,3 +3,9 @@
 .venv/
 python_export.xlsx
 data/EIOPA_RFR_20260930
+Deaths_1x1.txt
+Exposures_1x1.txt
+data/*.txt
+.DS_Store
+~$*
+__pycache__/

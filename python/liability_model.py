@@ -11,7 +11,7 @@ ROOT = Path(__file__).resolve().parents[1]
 DATA = ROOT / "data"
 CURVE_FILE = ROOT / "data" / "EIOPA_RFR_20260930" / "EIOPA_RFR_20260930_Term_Structures.xlsx"
 
-VALUATION_YEAR = 2024
+VALUATION_YEAR = 2026
 RETIREMENT_AGE = 68
 MAX_AGE = 110
 

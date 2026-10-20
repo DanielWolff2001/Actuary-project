@@ -260,7 +260,7 @@ q_RH <- apply(e65_RH_sim, 1, quantile, c(0.025, 0.5, 0.975))
 yrs <- as.numeric(colnames(q_LC))
 plot(yrs, q_LC[2, ], type = "l", col = "blue",
      ylim = range(q_LC, q_RH), xlab = "Year", ylab = "Period e65",
-     main = "Projected life expectancy at 65 (men)")
+     main = "Projected life expectancy at 65 (women)")
 lines(yrs, q_LC[1, ], lty = 2, col = "blue"); lines(yrs, q_LC[3, ], lty = 2, col = "blue")
 lines(yrs, q_RH[2, ], col = "red")
 lines(yrs, q_RH[1, ], lty = 2, col = "red"); lines(yrs, q_RH[3, ], lty = 2, col = "red")
