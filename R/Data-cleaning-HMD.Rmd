@@ -18,8 +18,8 @@ library(arrow)
 ```
 
 ```{r dataset}
-deaths <- read.table("/Users/danielwolff/Actuary-project/data/Deaths_1x1.txt", skip = 2, header = TRUE, na.strings = ".")
-expo   <- read.table("/Users/danielwolff/Actuary-project/data/Exposures_1x1.txt", skip = 2, header = TRUE, na.strings = ".")
+deaths <- read.table("../data/Deaths_1x1.txt", skip = 2, header = TRUE, na.strings = ".")
+expo   <- read.table("../data/Exposures_1x1.txt", skip = 2, header = TRUE, na.strings = ".")
 ```
 
 Only look at age 30-100 and year 1990-2023
